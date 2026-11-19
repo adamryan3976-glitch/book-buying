@@ -179,16 +179,24 @@ function evaluate(meta,forced){
   return {lvl,head:head||H[lvl][0],sub:H[lvl][1],why,own,ownText,sg,btb}}
 // ---------- lookup
 function isbn13(x){x=x.replace(/[^0-9Xx]/g,'');if(x.length===13&&/^97[89]/.test(x))return x;if(x.length===10){const b='978'+x.slice(0,9);let s=0;for(let i=0;i<12;i++)s+=(+b[i])*(i%2?3:1);return b+((10-s%10)%10)}return null}
-async function jget(url,ms){const c=new AbortController();const t=setTimeout(()=>c.abort(),ms||8000);try{const r=await fetch(url,{signal:c.signal});if(!r.ok)throw new Error(r.status);return await r.json()}finally{clearTimeout(t)}}
-async function lookup(i13){
+async function jget(url,ms){const c=new AbortController();const tm=setTimeout(()=>c.abort(),ms||9000);try{const r=await fetch(url,{signal:c.signal});if(!r.ok){const e=new Error('HTTP '+r.status);e.code=r.status;throw e}return await r.json()}finally{clearTimeout(tm)}}
+function isbn10of(i13){if(!/^978/.test(i13))return null;const b=i13.slice(3,12);let s=0;for(let i=0;i<9;i++)s+=(10-i)*(+b[i]);const c=(11-s%11)%11;return b+(c===10?'X':String(c))}
+function fromGB(j){const v=((j&&j.items)||[]).map(x=>x.volumeInfo).find(x=>x&&x.title);return v?{title:v.title,sub:v.subtitle||'',authors:v.authors||[],cats:(v.categories||[]).join(' / '),pages:v.pageCount||0,desc:(v.description||'').slice(0,300),src:'Google Books'}:null}
+function fromOL(j,k){const v=j&&j[k];return v&&v.title?{title:v.title,sub:v.subtitle||'',authors:(v.authors||[]).map(a=>a.name),cats:(v.subjects||[]).map(s=>s.name).slice(0,12).join(' / '),pages:v.number_of_pages||0,desc:'',src:'Open Library'}:null}
+function fromOLS(j){const d=j&&j.docs&&j.docs[0];return d&&d.title?{title:d.title,sub:d.subtitle||'',authors:d.author_name||[],cats:(d.subject||[]).slice(0,12).join(' / '),pages:d.number_of_pages_median||0,desc:'',src:'Open Library search'}:null}
+async function lookup(i13,report){
   try{const c=JSON.parse(localStorage.getItem('isbn_'+i13)||'null');if(c)return c}catch(e){}
-  let meta=null;
-  try{const j=await jget('https://www.googleapis.com/books/v1/volumes?q=isbn:'+i13+'&maxResults=3');
-    const v=(j.items||[]).map(x=>x.volumeInfo).find(x=>x&&x.title);
-    if(v)meta={title:v.title,sub:v.subtitle||'',authors:v.authors||[],cats:(v.categories||[]).join(' / '),pages:v.pageCount||0,desc:(v.description||'').slice(0,300),src:'Google Books'}}catch(e){}
-  if(!meta){try{const j=await jget('https://openlibrary.org/api/books?bibkeys=ISBN:'+i13+'&format=json&jscmd=data');const v=j['ISBN:'+i13];
-    if(v&&v.title)meta={title:v.title,sub:v.subtitle||'',authors:(v.authors||[]).map(a=>a.name),cats:(v.subjects||[]).map(s=>s.name).slice(0,12).join(' / '),pages:v.number_of_pages||0,desc:'',src:'Open Library'}}catch(e){}}
+  const i10=isbn10of(i13),errs={};
+  const jobs=[
+    ['Google Books',()=>jget('https://www.googleapis.com/books/v1/volumes?q=isbn:'+i13+'&maxResults=3').then(fromGB)],
+    ['Open Library',()=>jget('https://openlibrary.org/api/books?bibkeys=ISBN:'+i13+(i10?',ISBN:'+i10:'')+'&format=json&jscmd=data').then(j=>fromOL(j,'ISBN:'+i13)||(i10&&fromOL(j,'ISBN:'+i10)))],
+    ['Open Library search',()=>jget('https://openlibrary.org/search.json?isbn='+i13+'&limit=1&fields=title,subtitle,author_name,subject,number_of_pages_median').then(fromOLS)],
+    ['Google Books (plain)',()=>jget('https://www.googleapis.com/books/v1/volumes?q='+i13+'&maxResults=3').then(fromGB)]
+  ];
+  const meta=await new Promise(res=>{let left=jobs.length;
+    jobs.forEach(([n,f])=>{f().then(m=>{if(m)res(m);else errs[n]='no record'}).catch(e=>{errs[n]=e.code?('error '+e.code):(e.name==='AbortError'?'timed out':'no connection')}).finally(()=>{if(--left===0)res(null)})})});
   if(meta){try{localStorage.setItem('isbn_'+i13,JSON.stringify(meta))}catch(e){}}
+  else if(report)report(Object.entries(errs).map(([k,v])=>k+': '+v).join('; '));
   return meta}
 // ---------- UI
 let HIST=[];try{HIST=JSON.parse(localStorage.getItem('hist')||'[]')}catch(e){}
@@ -220,9 +228,9 @@ async function run(raw){
     if(li!==undefined){const it=ITEMS[li];const meta={title:it.t,authors:it.a?[it.a]:[],cats:'',pages:0,src:'your shelf list'};
       setStatus('ISBN '+i13+' found in your shelf list.');show(meta,evaluate(meta,it),i13);$('scan').value='';$('scan').focus();return}
     setStatus('Not in your shelf by ISBN. Looking up '+i13+'…');
-    const meta=await lookup(i13);
+    let why='';const meta=await lookup(i13,w=>why=w);
     if(meta){setStatus('ISBN '+i13+' via '+meta.src);show(meta,evaluate(meta),i13)}
-    else{setStatus('No online match for '+i13+'.');$('manual').style.display='block';$('mt').focus();return}
+    else{setStatus('No online match for '+i13+'. ('+why+')');$('manual').style.display='block';$('mt').focus();return}
   }else{
     let t=q,a='';const m=q.split(/\s+by\s+/i);if(m.length===2){t=m[0];a=m[1]}
     const meta={title:t,authors:a?[a]:[],cats:'',pages:0};setStatus('Typed title (no online details, so call number is a guess).');show(meta,evaluate(meta),'')}
