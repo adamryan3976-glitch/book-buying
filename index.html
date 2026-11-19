@@ -69,6 +69,7 @@ textarea{width:100%;height:110px;font-size:13px}
 <div id="hist"></div>
 <div class="row"><button class="alt" id="copy">Show list to copy</button><button class="alt" id="wipe">Clear history</button></div>
 <textarea id="out" style="display:none" readonly></textarea>
+<p class="note"><a href="#" id="keylink">Google Books key (fixes “error 429”)</a><span id="keybox" style="display:none"><br><input id="keyin" placeholder="Paste your Google Books API key" style="width:100%;font-size:15px;padding:8px;margin:6px 0;border:2px solid #9ca3af;border-radius:8px"><button id="keysave" style="width:100%">Save key</button></span></p>
 <p class="note">Ratings use your Shelf List, circulation reports and Books to Buy form (data as of <span id="b2"></span>). Titles are looked up from the ISBN online (Google Books, then Open Library), so you need a signal. Call numbers are suggestions; check the section against your Resource Selection Policy before shelving.</p>
 </main>
 <script>
@@ -179,6 +180,9 @@ function evaluate(meta,forced){
   return {lvl,head:head||H[lvl][0],sub:H[lvl][1],why,own,ownText,sg,btb}}
 // ---------- lookup
 function isbn13(x){x=x.replace(/[^0-9Xx]/g,'');if(x.length===13&&/^97[89]/.test(x))return x;if(x.length===10){const b='978'+x.slice(0,9);let s=0;for(let i=0;i<12;i++)s+=(+b[i])*(i%2?3:1);return b+((10-s%10)%10)}return null}
+function gbKey(){try{return (localStorage.getItem('gbkey')||'').trim()}catch(e){return ''}}
+async function jgetR(url,ms){try{return await jget(url,ms)}catch(e){if(e.code===429){await new Promise(r=>setTimeout(r,1800));return await jget(url,ms)}throw e}}
+function fromLOC(j){const r=j&&j.results&&j.results[0];if(!r||!r.title)return null;const a=(r.contributor||r.contributors||[]);return{title:String(r.title).replace(/\s*[\/:;]\s*$/,''),sub:'',authors:Array.isArray(a)?a.map(x=>String(x).replace(/,\s*\d{4}.*$/,'')):[],cats:(r.subject||[]).slice(0,10).join(' / '),pages:0,desc:'',src:'Library of Congress'}}
 async function jget(url,ms){const c=new AbortController();const tm=setTimeout(()=>c.abort(),ms||9000);try{const r=await fetch(url,{signal:c.signal});if(!r.ok){const e=new Error('HTTP '+r.status);e.code=r.status;throw e}return await r.json()}finally{clearTimeout(tm)}}
 function isbn10of(i13){if(!/^978/.test(i13))return null;const b=i13.slice(3,12);let s=0;for(let i=0;i<9;i++)s+=(10-i)*(+b[i]);const c=(11-s%11)%11;return b+(c===10?'X':String(c))}
 function fromGB(j){const v=((j&&j.items)||[]).map(x=>x.volumeInfo).find(x=>x&&x.title);return v?{title:v.title,sub:v.subtitle||'',authors:v.authors||[],cats:(v.categories||[]).join(' / '),pages:v.pageCount||0,desc:(v.description||'').slice(0,300),src:'Google Books'}:null}
@@ -188,10 +192,11 @@ async function lookup(i13,report){
   try{const c=JSON.parse(localStorage.getItem('isbn_'+i13)||'null');if(c)return c}catch(e){}
   const i10=isbn10of(i13),errs={};
   const jobs=[
-    ['Google Books',()=>jget('https://www.googleapis.com/books/v1/volumes?q=isbn:'+i13+'&maxResults=3').then(fromGB)],
+    ['Google Books',()=>jgetR('https://www.googleapis.com/books/v1/volumes?q=isbn:'+i13+'&maxResults=3'+(gbKey()?'&key='+encodeURIComponent(gbKey()):'')).then(fromGB)],
     ['Open Library',()=>jget('https://openlibrary.org/api/books?bibkeys=ISBN:'+i13+(i10?',ISBN:'+i10:'')+'&format=json&jscmd=data').then(j=>fromOL(j,'ISBN:'+i13)||(i10&&fromOL(j,'ISBN:'+i10)))],
     ['Open Library search',()=>jget('https://openlibrary.org/search.json?isbn='+i13+'&limit=1&fields=title,subtitle,author_name,subject,number_of_pages_median').then(fromOLS)],
-    ['Google Books (plain)',()=>jget('https://www.googleapis.com/books/v1/volumes?q='+i13+'&maxResults=3').then(fromGB)]
+    ['Google Books (plain)',()=>jgetR('https://www.googleapis.com/books/v1/volumes?q='+i13+'&maxResults=3'+(gbKey()?'&key='+encodeURIComponent(gbKey()):'')).then(fromGB)],
+    ['Library of Congress',()=>jget('https://www.loc.gov/books/?q='+i13+'&fo=json&c=1').then(fromLOC)]
   ];
   const meta=await new Promise(res=>{let left=jobs.length;
     jobs.forEach(([n,f])=>{f().then(m=>{if(m)res(m);else errs[n]='no record'}).catch(e=>{errs[n]=e.code?('error '+e.code):(e.name==='AbortError'?'timed out':'no connection')}).finally(()=>{if(--left===0)res(null)})})});
@@ -242,5 +247,7 @@ $('mgo').onclick=()=>{const t=$('mt').value.trim();if(!t)return;const a=$('ma').
 $('copy').onclick=()=>{const o=$('out');o.style.display='block';o.value=HIST.filter(h=>h.l!=='R').map(h=>LBL[h.l]+'\t'+h.t+'\t'+h.a+'\t'+h.cn+'\t'+h.i).join('\n');o.select();try{navigator.clipboard.writeText(o.value)}catch(e){}};
 $('wipe').onclick=()=>{HIST=[];saveH();renderHist()};
 document.addEventListener('click',e=>{if(!['TEXTAREA','INPUT','BUTTON'].includes(e.target.tagName))$('scan').focus()});
+$('keylink').onclick=e=>{e.preventDefault();$('keybox').style.display='inline';$('keyin').value=gbKey()};
+$('keysave').onclick=()=>{try{localStorage.setItem('gbkey',$('keyin').value.trim())}catch(e){}$('keybox').style.display='none';setStatus($('keyin').value.trim()?'Key saved on this device.':'Key cleared.')};
 renderHist();
 </script></body></html>
